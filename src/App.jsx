@@ -1,98 +1,85 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
-const STORAGE_KEY = 'power-split-state'
+const STORAGE_KEY = 'power-split-communal-v1'
 
-const TEXT = {
-  meter: '\u0421\u0447\u0451\u0442\u0447\u0438\u043A',
-  title: 'Power Split',
-  subtitle:
-    '\u041a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442\u043e\u0440 \u043e\u043f\u043b\u0430\u0442\u044b \u044d\u043b\u0435\u043a\u0442\u0440\u043e\u044d\u043d\u0435\u0440\u0433\u0438\u0438 \u043f\u043e \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u0438\u043c \u0441\u0447\u0451\u0442\u0447\u0438\u043a\u0430\u043c.',
-  tariffLabel: '\u0422\u0430\u0440\u0438\u0444 (\u20bd/\u043a\u0412\u0442\u22c5\u0447)',
-  name: '\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435',
-  previous: '\u041f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0435\u0435',
-  current: '\u0422\u0435\u043a\u0443\u0449\u0435\u0435',
-  usage: '\u0420\u0430\u0441\u0445\u043e\u0434',
-  amount: '\u0421\u0443\u043c\u043c\u0430',
-  remove: '\u0423\u0434\u0430\u043b\u0438\u0442\u044c',
-  addMeter: '\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u0447\u0451\u0442\u0447\u0438\u043a',
-  copyResult: '\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442',
-  reset: '\u0421\u0431\u0440\u043e\u0441\u0438\u0442\u044c',
-  tariffShort: '\u0422\u0430\u0440\u0438\u0444',
-  totalUsage: '\u041e\u0431\u0449\u0438\u0439 \u0440\u0430\u0441\u0445\u043e\u0434',
-  totalAmount: '\u041e\u0431\u0449\u0430\u044f \u0441\u0443\u043c\u043c\u0430',
-  totalShort: '\u0418\u0442\u043e\u0433\u043e',
-  unit: '\u043a\u0412\u0442\u22c5\u0447',
-  invalid: '\u0422\u0435\u043a\u0443\u0449\u0435\u0435 \u043c\u0435\u043d\u044c\u0448\u0435 \u043f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0435\u0433\u043e',
-  placeholder: '\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440 12345.6',
-  copied: '\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e',
-  copyFailed: '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c',
+const DISTRIBUTION_EQUAL = 'equal'
+const DISTRIBUTION_PROPORTIONAL = 'proportional'
+
+const DEFAULT_STATE = {
+  tariffDay: 0,
+  tariffNight: 0,
+  meterA: {
+    dayPrev: '',
+    dayCurr: '',
+    nightPrev: '',
+    nightCurr: '',
+  },
+  meterB: {
+    prev: '',
+    curr: '',
+  },
+  meterC: {
+    prev: '',
+    curr: '',
+  },
+  distributionMode: DISTRIBUTION_EQUAL,
 }
-
-const createMeter = (index = 1) => ({
-  id: crypto.randomUUID(),
-  name: `${TEXT.meter} ${index}`,
-  previous: '',
-  current: '',
-})
-
-const DEFAULT_TARIFF = 0
 
 const parseNumber = (value) => {
-  const n = Number(value)
-  return Number.isFinite(n) ? n : 0
+  const num = Number(value)
+  return Number.isFinite(num) ? num : 0
 }
 
-const hasInvalidReading = (meter) => {
-  if (meter.previous === '' || meter.current === '') return false
-  const previous = Number(meter.previous)
-  const current = Number(meter.current)
-  if (!Number.isFinite(previous) || !Number.isFinite(current)) return false
-  return current < previous
-}
+const usage = (prev, curr) => Math.max(0, parseNumber(curr) - parseNumber(prev))
+const isLowerThanPrev = (prev, curr) => prev !== '' && curr !== '' && parseNumber(curr) < parseNumber(prev)
+const formatMoney = (value) => `${value.toFixed(2)} ₽`
+const formatKwh = (value) => `${value.toFixed(2)} кВт⋅ч`
 
-const formatRubles = (value) => `${value.toFixed(2)} \u20bd`
+const roomTitles = ['Комната 1', 'Комната 2', 'Комната 3', 'Комната 4']
 
 function App() {
-  const [tariff, setTariff] = useState(DEFAULT_TARIFF)
-  const [meters, setMeters] = useState([createMeter(1)])
+  const [state, setState] = useState(DEFAULT_STATE)
   const [copyStatus, setCopyStatus] = useState('')
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (!saved) return
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return
 
-      const parsed = JSON.parse(saved)
-      if (typeof parsed !== 'object' || parsed === null) return
+      const parsed = JSON.parse(raw)
+      if (!parsed || typeof parsed !== 'object') return
 
-      const restoredTariff = parseNumber(parsed.tariff)
-      const restoredMeters = Array.isArray(parsed.meters)
-        ? parsed.meters.map((meter, index) => ({
-            id: meter.id || crypto.randomUUID(),
-            name: typeof meter.name === 'string' ? meter.name : `${TEXT.meter} ${index + 1}`,
-            previous: meter.previous ?? '',
-            current: meter.current ?? '',
-          }))
-        : []
-
-      setTariff(restoredTariff)
-      setMeters(restoredMeters.length > 0 ? restoredMeters : [createMeter(1)])
+      setState({
+        tariffDay: parseNumber(parsed.tariffDay),
+        tariffNight: parseNumber(parsed.tariffNight),
+        meterA: {
+          dayPrev: parsed?.meterA?.dayPrev ?? '',
+          dayCurr: parsed?.meterA?.dayCurr ?? '',
+          nightPrev: parsed?.meterA?.nightPrev ?? '',
+          nightCurr: parsed?.meterA?.nightCurr ?? '',
+        },
+        meterB: {
+          prev: parsed?.meterB?.prev ?? '',
+          curr: parsed?.meterB?.curr ?? '',
+        },
+        meterC: {
+          prev: parsed?.meterC?.prev ?? '',
+          curr: parsed?.meterC?.curr ?? '',
+        },
+        distributionMode:
+          parsed.distributionMode === DISTRIBUTION_PROPORTIONAL
+            ? DISTRIBUTION_PROPORTIONAL
+            : DISTRIBUTION_EQUAL,
+      })
     } catch {
-      setTariff(DEFAULT_TARIFF)
-      setMeters([createMeter(1)])
+      setState(DEFAULT_STATE)
     }
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        tariff,
-        meters,
-      }),
-    )
-  }, [tariff, meters])
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  }, [state])
 
   useEffect(() => {
     if (!copyStatus) return undefined
@@ -100,184 +87,346 @@ function App() {
     return () => clearTimeout(timer)
   }, [copyStatus])
 
-  const rows = useMemo(
-    () =>
-      meters.map((meter) => {
-        const previous = parseNumber(meter.previous)
-        const current = parseNumber(meter.current)
-        const hasError = hasInvalidReading(meter)
-        const usage = hasError ? 0 : Math.max(0, current - previous)
-        const amount = usage * parseNumber(tariff)
+  const metrics = useMemo(() => {
+    const A_day = usage(state.meterA.dayPrev, state.meterA.dayCurr)
+    const A_night = usage(state.meterA.nightPrev, state.meterA.nightCurr)
+    const A_total = A_day + A_night
 
-        return { ...meter, usage, amount, hasError }
-      }),
-    [meters, tariff],
-  )
+    const B_total = usage(state.meterB.prev, state.meterB.curr)
+    const C_total = usage(state.meterC.prev, state.meterC.curr)
 
-  const totals = useMemo(() => {
-    const totalUsage = rows.reduce((sum, row) => sum + row.usage, 0)
-    const totalAmount = rows.reduce((sum, row) => sum + row.amount, 0)
+    const base = [B_total / 2, B_total / 2, C_total / 2, C_total / 2]
+    const Common_kwh = Math.max(0, A_total - (B_total + C_total))
+
+    let commonShares = [Common_kwh / 4, Common_kwh / 4, Common_kwh / 4, Common_kwh / 4]
+    if (state.distributionMode === DISTRIBUTION_PROPORTIONAL) {
+      const sumWeights = base.reduce((sum, item) => sum + item, 0)
+      commonShares =
+        sumWeights > 0
+          ? base.map((weight) => (Common_kwh * weight) / sumWeights)
+          : [Common_kwh / 4, Common_kwh / 4, Common_kwh / 4, Common_kwh / 4]
+    }
+
+    const dayShare = A_total === 0 ? 0.5 : A_day / A_total
+    const nightShare = 1 - dayShare
+    const pricePerKwh = dayShare * parseNumber(state.tariffDay) + nightShare * parseNumber(state.tariffNight)
+
+    const rooms = roomTitles.map((name, index) => {
+      const roomKwh = base[index] + commonShares[index]
+      const roomCost = roomKwh * pricePerKwh
+      return {
+        name,
+        baseKwh: base[index],
+        commonKwh: commonShares[index],
+        totalKwh: roomKwh,
+        cost: roomCost,
+      }
+    })
+
+    const Rooms_total = rooms.reduce((sum, room) => sum + room.totalKwh, 0)
+    const Total_rub = rooms.reduce((sum, room) => sum + room.cost, 0)
 
     return {
-      totalUsage,
-      totalAmount,
+      A_day,
+      A_night,
+      A_total,
+      B_total,
+      C_total,
+      Common_kwh,
+      dayShare,
+      nightShare,
+      pricePerKwh,
+      rooms,
+      Rooms_total,
+      Total_rub,
     }
-  }, [rows])
+  }, [state])
 
-  const handleMeterChange = (id, field, value) => {
-    setMeters((prev) =>
-      prev.map((meter) =>
-        meter.id === id
-          ? {
-              ...meter,
-              [field]: value,
-            }
-          : meter,
-      ),
-    )
+  const errors = {
+    aDay: isLowerThanPrev(state.meterA.dayPrev, state.meterA.dayCurr),
+    aNight: isLowerThanPrev(state.meterA.nightPrev, state.meterA.nightCurr),
+    b: isLowerThanPrev(state.meterB.prev, state.meterB.curr),
+    c: isLowerThanPrev(state.meterC.prev, state.meterC.curr),
   }
 
-  const addMeter = () => {
-    setMeters((prev) => [...prev, createMeter(prev.length + 1)])
-  }
-
-  const removeMeter = (id) => {
-    setMeters((prev) => {
-      const next = prev.filter((meter) => meter.id !== id)
-      return next.length > 0 ? next : [createMeter(1)]
+  const setField = (path, value) => {
+    setState((prev) => {
+      const next = structuredClone(prev)
+      let cursor = next
+      for (let i = 0; i < path.length - 1; i += 1) cursor = cursor[path[i]]
+      cursor[path[path.length - 1]] = value
+      return next
     })
   }
 
   const resetAll = () => {
     localStorage.removeItem(STORAGE_KEY)
-    setTariff(DEFAULT_TARIFF)
-    setMeters([createMeter(1)])
+    setState(DEFAULT_STATE)
     setCopyStatus('')
   }
 
-  const handleCopyResult = async () => {
-    const normalizedTariff = parseNumber(tariff)
-    const meterParts = rows.map((row, index) => {
-      const meterName = row.name?.trim() || `${TEXT.meter}${index + 1}`
-      return `${meterName}: ${row.usage.toFixed(2)} ${TEXT.unit} = ${formatRubles(row.amount)}`
-    })
-
-    const resultText = [
-      `${TEXT.tariffShort}: ${normalizedTariff.toFixed(2)} \u20bd/${TEXT.unit}`,
-      ...meterParts,
-      `${TEXT.totalShort}: ${formatRubles(totals.totalAmount)}`,
-    ].join('; ')
+  const handleCopyReport = async () => {
+    const report = [
+      '🧾 Power Split',
+      `☀️/🌙 Тарифы: день ${formatMoney(parseNumber(state.tariffDay))}, ночь ${formatMoney(parseNumber(state.tariffNight))}`,
+      `⚡️ A: день ${formatKwh(metrics.A_day)}, ночь ${formatKwh(metrics.A_night)}, всего ${formatKwh(metrics.A_total)}`,
+      `🏠 B (комн. 1–2): ${formatKwh(metrics.B_total)}`,
+      `🏠 C (комн. 3–4): ${formatKwh(metrics.C_total)}`,
+      `Распределение общих: ${state.distributionMode === DISTRIBUTION_EQUAL ? 'поровну' : 'пропорционально'}`,
+      `Общие кВт⋅ч: ${formatKwh(metrics.Common_kwh)}`,
+      ...metrics.rooms.map(
+        (room) =>
+          `${room.name}: ${formatKwh(room.totalKwh)} = ${formatMoney(room.cost)} (база ${formatKwh(room.baseKwh)} + общие ${formatKwh(room.commonKwh)})`,
+      ),
+      `Итого: ${formatMoney(metrics.Total_rub)}`,
+    ].join('\n')
 
     try {
-      await navigator.clipboard.writeText(resultText)
-      setCopyStatus(TEXT.copied)
+      await navigator.clipboard.writeText(report)
+      setCopyStatus('Скопировано')
     } catch {
-      setCopyStatus(TEXT.copyFailed)
+      setCopyStatus('Не удалось скопировать')
     }
   }
 
   return (
-    <main className="page">
+    <main className="app">
       <section className="card">
-        <h1>{TEXT.title}</h1>
-        <p className="subtitle">{TEXT.subtitle}</p>
+        <h1>⚡️ Power Split</h1>
+        <p className="subtitle">Расчёт оплаты электроэнергии для коммунальной квартиры (4 комнаты).</p>
 
-        <div className="tariff-row">
-          <label htmlFor="tariff">{TEXT.tariffLabel}</label>
-          <input
-            id="tariff"
-            type="number"
-            step="0.01"
-            min="0"
-            value={tariff}
-            onChange={(e) => setTariff(e.target.value)}
-          />
+        <div className="grid">
+          <section className="panel">
+            <h2>☀️🌙 Тарифы</h2>
+            <div className="field-grid">
+              <label>
+                День (₽/кВт⋅ч)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.tariffDay}
+                  onChange={(e) => setField(['tariffDay'], e.target.value)}
+                />
+              </label>
+              <label>
+                Ночь (₽/кВт⋅ч)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.tariffNight}
+                  onChange={(e) => setField(['tariffNight'], e.target.value)}
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="panel">
+            <h2>⚡️ Счётчик A (общий)</h2>
+            <div className="subhead">☀️ День</div>
+            <div className="field-grid two-cols">
+              <label>
+                Предыдущее
+                <input
+                  className={errors.aDay ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterA.dayPrev}
+                  onChange={(e) => setField(['meterA', 'dayPrev'], e.target.value)}
+                />
+              </label>
+              <label>
+                Текущее
+                <input
+                  className={errors.aDay ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterA.dayCurr}
+                  onChange={(e) => setField(['meterA', 'dayCurr'], e.target.value)}
+                />
+              </label>
+            </div>
+            {errors.aDay && <p className="error-text">Текущее меньше предыдущего</p>}
+
+            <div className="subhead">🌙 Ночь</div>
+            <div className="field-grid two-cols">
+              <label>
+                Предыдущее
+                <input
+                  className={errors.aNight ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterA.nightPrev}
+                  onChange={(e) => setField(['meterA', 'nightPrev'], e.target.value)}
+                />
+              </label>
+              <label>
+                Текущее
+                <input
+                  className={errors.aNight ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterA.nightCurr}
+                  onChange={(e) => setField(['meterA', 'nightCurr'], e.target.value)}
+                />
+              </label>
+            </div>
+            {errors.aNight && <p className="error-text">Текущее меньше предыдущего</p>}
+          </section>
+
+          <section className="panel">
+            <h2>🏠 Счётчик B (комнаты 1–2)</h2>
+            <div className="field-grid two-cols">
+              <label>
+                Предыдущее
+                <input
+                  className={errors.b ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterB.prev}
+                  onChange={(e) => setField(['meterB', 'prev'], e.target.value)}
+                />
+              </label>
+              <label>
+                Текущее
+                <input
+                  className={errors.b ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterB.curr}
+                  onChange={(e) => setField(['meterB', 'curr'], e.target.value)}
+                />
+              </label>
+            </div>
+            {errors.b && <p className="error-text">Текущее меньше предыдущего</p>}
+          </section>
+
+          <section className="panel">
+            <h2>🏠 Счётчик C (комнаты 3–4)</h2>
+            <div className="field-grid two-cols">
+              <label>
+                Предыдущее
+                <input
+                  className={errors.c ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterC.prev}
+                  onChange={(e) => setField(['meterC', 'prev'], e.target.value)}
+                />
+              </label>
+              <label>
+                Текущее
+                <input
+                  className={errors.c ? 'input-error' : ''}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={state.meterC.curr}
+                  onChange={(e) => setField(['meterC', 'curr'], e.target.value)}
+                />
+              </label>
+            </div>
+            {errors.c && <p className="error-text">Текущее меньше предыдущего</p>}
+          </section>
         </div>
 
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{TEXT.name}</th>
-                <th>{TEXT.previous}</th>
-                <th>{TEXT.current}</th>
-                <th>{TEXT.usage}</th>
-                <th>{TEXT.amount}</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id} className={row.hasError ? 'invalid-row' : ''}>
-                  <td>
-                    <input
-                      type="text"
-                      value={row.name}
-                      onChange={(e) => handleMeterChange(row.id, 'name', e.target.value)}
-                    />
-                  </td>
-                  <td>
-                    <div className="reading-field">
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        placeholder={TEXT.placeholder}
-                        value={row.previous}
-                        onChange={(e) => handleMeterChange(row.id, 'previous', e.target.value)}
-                      />
-                      <span className="unit-label">{TEXT.unit}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="reading-field">
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        placeholder={TEXT.placeholder}
-                        value={row.current}
-                        onChange={(e) => handleMeterChange(row.id, 'current', e.target.value)}
-                      />
-                      <span className="unit-label">{TEXT.unit}</span>
-                    </div>
-                    {row.hasError && <div className="error-text">{TEXT.invalid}</div>}
-                  </td>
-                  <td>{row.usage.toFixed(2)}</td>
-                  <td>{formatRubles(row.amount)}</td>
-                  <td>
-                    <button className="danger" type="button" onClick={() => removeMeter(row.id)}>
-                      {TEXT.remove}
-                    </button>
-                  </td>
+        <section className="panel">
+          <h2>⚙️ Распределение общих расходов</h2>
+          <div className="toggle-group">
+            <label className="toggle-option">
+              <input
+                type="radio"
+                name="distributionMode"
+                checked={state.distributionMode === DISTRIBUTION_EQUAL}
+                onChange={() => setField(['distributionMode'], DISTRIBUTION_EQUAL)}
+              />
+              Поровну по 4 комнатам
+            </label>
+            <label className="toggle-option">
+              <input
+                type="radio"
+                name="distributionMode"
+                checked={state.distributionMode === DISTRIBUTION_PROPORTIONAL}
+                onChange={() => setField(['distributionMode'], DISTRIBUTION_PROPORTIONAL)}
+              />
+              Пропорционально потреблению
+            </label>
+          </div>
+        </section>
+
+        <section className="panel">
+          <h2>📋 Результаты по комнатам</h2>
+
+          <div className="rooms-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Комната</th>
+                  <th>База</th>
+                  <th>Общие</th>
+                  <th>Итог кВт⋅ч</th>
+                  <th>Стоимость</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {metrics.rooms.map((room) => (
+                  <tr key={room.name}>
+                    <td>{room.name}</td>
+                    <td>{room.baseKwh.toFixed(2)}</td>
+                    <td>{room.commonKwh.toFixed(2)}</td>
+                    <td>{room.totalKwh.toFixed(2)}</td>
+                    <td>{formatMoney(room.cost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="rooms-cards">
+            {metrics.rooms.map((room) => (
+              <article className="room-card" key={`mobile-${room.name}`}>
+                <h3>{room.name}</h3>
+                <p>База: {formatKwh(room.baseKwh)}</p>
+                <p>Общие: {formatKwh(room.commonKwh)}</p>
+                <p>Итог: {formatKwh(room.totalKwh)}</p>
+                <p>Стоимость: {formatMoney(room.cost)}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel">
+          <h2>🧾 Итоги</h2>
+          <div className="summary-grid">
+            <p>A_day: {formatKwh(metrics.A_day)}</p>
+            <p>A_night: {formatKwh(metrics.A_night)}</p>
+            <p>A_total: {formatKwh(metrics.A_total)}</p>
+            <p>Rooms_total: {formatKwh(metrics.Rooms_total)}</p>
+            <p>Common_kwh: {formatKwh(metrics.Common_kwh)}</p>
+            <p>Цена 1 кВт⋅ч: {formatMoney(metrics.pricePerKwh)}</p>
+            <p>Доля дня: {(metrics.dayShare * 100).toFixed(1)}%</p>
+            <p>Доля ночи: {(metrics.nightShare * 100).toFixed(1)}%</p>
+            <p className="summary-total">Total ₽: {formatMoney(metrics.Total_rub)}</p>
+          </div>
+        </section>
 
         <div className="actions">
-          <button type="button" onClick={addMeter}>
-            {TEXT.addMeter}
+          <button type="button" className="btn secondary" onClick={handleCopyReport}>
+            📋 Скопировать отчёт
           </button>
-          <button type="button" className="secondary" onClick={handleCopyResult}>
-            {TEXT.copyResult}
-          </button>
-          <button type="button" className="danger" onClick={resetAll}>
-            {TEXT.reset}
+          <button type="button" className="btn danger" onClick={resetAll}>
+            Сбросить
           </button>
         </div>
-
         {copyStatus && <p className="copy-status">{copyStatus}</p>}
-
-        <div className="totals">
-          <p>
-            {TEXT.totalUsage}: <strong>{totals.totalUsage.toFixed(2)} {TEXT.unit}</strong>
-          </p>
-          <p>
-            {TEXT.totalAmount}: <strong>{formatRubles(totals.totalAmount)}</strong>
-          </p>
-        </div>
       </section>
     </main>
   )
