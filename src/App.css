@@ -93,6 +93,34 @@ th {
   letter-spacing: 0.03em;
 }
 
+.invalid-row td {
+  background: #fff7f7;
+  border-bottom-color: #fecaca;
+}
+
+.invalid-row td:first-child {
+  border-left: 3px solid #dc2626;
+}
+
+.reading-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unit-label {
+  color: #6b7280;
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
+.error-text {
+  margin-top: 6px;
+  color: #b91c1c;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 button {
   border: 0;
   border-radius: 10px;
@@ -107,6 +135,10 @@ button:hover {
   opacity: 0.92;
 }
 
+button.secondary {
+  background: #1d4ed8;
+}
+
 button.danger {
   background: #dc2626;
 }
@@ -116,6 +148,13 @@ button.danger {
   gap: 10px;
   margin-top: 16px;
   flex-wrap: wrap;
+}
+
+.copy-status {
+  margin: 10px 0 0;
+  color: #1d4ed8;
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 
 .totals {
