@@ -1,10 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
-const STORAGE_KEY = 'power-split-communal-v1'
-
-const DISTRIBUTION_EQUAL = 'equal'
-const DISTRIBUTION_PROPORTIONAL = 'proportional'
+const STORAGE_KEY = 'power-split-communal-v2'
 
 const DEFAULT_STATE = {
   tariffDay: 0,
@@ -23,20 +20,26 @@ const DEFAULT_STATE = {
     prev: '',
     curr: '',
   },
-  distributionMode: DISTRIBUTION_EQUAL,
+  people: [1, 1, 1, 1],
 }
+
+const ROOM_NAMES = ['Комната 1', 'Комната 2', 'Комната 3', 'Комната 4']
 
 const parseNumber = (value) => {
   const num = Number(value)
   return Number.isFinite(num) ? num : 0
 }
 
+const parsePeople = (value) => {
+  const num = Math.floor(parseNumber(value))
+  return num >= 0 ? num : 0
+}
+
 const usage = (prev, curr) => Math.max(0, parseNumber(curr) - parseNumber(prev))
 const isLowerThanPrev = (prev, curr) => prev !== '' && curr !== '' && parseNumber(curr) < parseNumber(prev)
 const formatMoney = (value) => `${value.toFixed(2)} ₽`
 const formatKwh = (value) => `${value.toFixed(2)} кВт⋅ч`
-
-const roomTitles = ['Комната 1', 'Комната 2', 'Комната 3', 'Комната 4']
+const formatFamily = (family) => `${family.name}: людей ${family.people}, ${formatKwh(family.totalKwh)} = ${formatMoney(family.cost)}`
 
 function App() {
   const [state, setState] = useState(DEFAULT_STATE)
@@ -49,6 +52,8 @@ function App() {
 
       const parsed = JSON.parse(raw)
       if (!parsed || typeof parsed !== 'object') return
+
+      const restoredPeople = Array.isArray(parsed.people) ? parsed.people.map((v) => parsePeople(v)).slice(0, 4) : []
 
       setState({
         tariffDay: parseNumber(parsed.tariffDay),
@@ -67,10 +72,7 @@ function App() {
           prev: parsed?.meterC?.prev ?? '',
           curr: parsed?.meterC?.curr ?? '',
         },
-        distributionMode:
-          parsed.distributionMode === DISTRIBUTION_PROPORTIONAL
-            ? DISTRIBUTION_PROPORTIONAL
-            : DISTRIBUTION_EQUAL,
+        people: [0, 1, 2, 3].map((i) => (Number.isInteger(restoredPeople[i]) ? restoredPeople[i] : 1)),
       })
     } catch {
       setState(DEFAULT_STATE)
@@ -94,34 +96,90 @@ function App() {
 
     const B_total = usage(state.meterB.prev, state.meterB.curr)
     const C_total = usage(state.meterC.prev, state.meterC.curr)
-
-    const base = [B_total / 2, B_total / 2, C_total / 2, C_total / 2]
     const Common_kwh = Math.max(0, A_total - (B_total + C_total))
 
-    let commonShares = [Common_kwh / 4, Common_kwh / 4, Common_kwh / 4, Common_kwh / 4]
-    if (state.distributionMode === DISTRIBUTION_PROPORTIONAL) {
-      const sumWeights = base.reduce((sum, item) => sum + item, 0)
-      commonShares =
-        sumWeights > 0
-          ? base.map((weight) => (Common_kwh * weight) / sumWeights)
-          : [Common_kwh / 4, Common_kwh / 4, Common_kwh / 4, Common_kwh / 4]
+    const peopleRaw = state.people.map((value) => parsePeople(value))
+    const warnings = []
+
+    const baseByRoom = [0, 0, 0, 0]
+    const p1 = peopleRaw[0]
+    const p2 = peopleRaw[1]
+    const p3 = peopleRaw[2]
+    const p4 = peopleRaw[3]
+
+    if (p1 > 0 && p3 > 0) {
+      baseByRoom[0] = B_total / 2
+      baseByRoom[2] = B_total / 2
+    } else if (p1 > 0 && p3 === 0) {
+      baseByRoom[0] = B_total
+    } else if (p1 === 0 && p3 > 0) {
+      baseByRoom[2] = B_total
+    } else {
+      warnings.push('По счётчику B нет жильцов')
+    }
+
+    if (p2 > 0 && p4 > 0) {
+      baseByRoom[1] = C_total / 2
+      baseByRoom[3] = C_total / 2
+    } else if (p2 > 0 && p4 === 0) {
+      baseByRoom[1] = C_total
+    } else if (p2 === 0 && p4 > 0) {
+      baseByRoom[3] = C_total
+    } else {
+      warnings.push('По счётчику C нет жильцов')
+    }
+
+    const totalPeoplePositive = peopleRaw.reduce((sum, p) => (p > 0 ? sum + p : sum), 0)
+    const commonShares =
+      totalPeoplePositive === 0
+        ? [0, 0, 0, 0]
+        : peopleRaw.map((p) => (p > 0 ? (Common_kwh * p) / totalPeoplePositive : 0))
+
+    if (totalPeoplePositive === 0) {
+      warnings.push('Нет жильцов')
     }
 
     const dayShare = A_total === 0 ? 0.5 : A_day / A_total
     const nightShare = 1 - dayShare
     const pricePerKwh = dayShare * parseNumber(state.tariffDay) + nightShare * parseNumber(state.tariffNight)
 
-    const rooms = roomTitles.map((name, index) => {
-      const roomKwh = base[index] + commonShares[index]
-      const roomCost = roomKwh * pricePerKwh
+    const rooms = ROOM_NAMES.map((name, index) => {
+      const isOccupied = peopleRaw[index] > 0
+      const baseKwh = isOccupied ? baseByRoom[index] : 0
+      const commonKwh = isOccupied ? commonShares[index] : 0
+      const totalKwh = isOccupied ? baseKwh + commonKwh : 0
+      const cost = isOccupied ? totalKwh * pricePerKwh : 0
+
       return {
         name,
-        baseKwh: base[index],
-        commonKwh: commonShares[index],
-        totalKwh: roomKwh,
-        cost: roomCost,
+        people: peopleRaw[index],
+        baseKwh,
+        commonKwh,
+        totalKwh,
+        cost,
       }
     })
+
+    const families = [
+      {
+        name: 'Тётя Ира и Сергей',
+        people: rooms[0].people + rooms[2].people,
+        totalKwh: rooms[0].totalKwh + rooms[2].totalKwh,
+        cost: rooms[0].cost + rooms[2].cost,
+      },
+      {
+        name: 'Комната 2',
+        people: rooms[1].people,
+        totalKwh: rooms[1].totalKwh,
+        cost: rooms[1].cost,
+      },
+      {
+        name: 'Комната 4',
+        people: rooms[3].people,
+        totalKwh: rooms[3].totalKwh,
+        cost: rooms[3].cost,
+      },
+    ]
 
     const Rooms_total = rooms.reduce((sum, room) => sum + room.totalKwh, 0)
     const Total_rub = rooms.reduce((sum, room) => sum + room.cost, 0)
@@ -137,8 +195,11 @@ function App() {
       nightShare,
       pricePerKwh,
       rooms,
+      families,
+      totalPeople: peopleRaw.reduce((sum, p) => sum + p, 0),
       Rooms_total,
       Total_rub,
+      warnings,
     }
   }, [state])
 
@@ -159,6 +220,14 @@ function App() {
     })
   }
 
+  const setPeople = (index, value) => {
+    setState((prev) => {
+      const next = structuredClone(prev)
+      next.people[index] = parsePeople(value)
+      return next
+    })
+  }
+
   const resetAll = () => {
     localStorage.removeItem(STORAGE_KEY)
     setState(DEFAULT_STATE)
@@ -170,14 +239,17 @@ function App() {
       '🧾 Power Split',
       `☀️/🌙 Тарифы: день ${formatMoney(parseNumber(state.tariffDay))}, ночь ${formatMoney(parseNumber(state.tariffNight))}`,
       `⚡️ A: день ${formatKwh(metrics.A_day)}, ночь ${formatKwh(metrics.A_night)}, всего ${formatKwh(metrics.A_total)}`,
-      `🏠 B (комн. 1–2): ${formatKwh(metrics.B_total)}`,
-      `🏠 C (комн. 3–4): ${formatKwh(metrics.C_total)}`,
-      `Распределение общих: ${state.distributionMode === DISTRIBUTION_EQUAL ? 'поровну' : 'пропорционально'}`,
+      `🏠 B (комнаты 1 и 3): ${formatKwh(metrics.B_total)}`,
+      `🏠 C (комнаты 2 и 4): ${formatKwh(metrics.C_total)}`,
       `Общие кВт⋅ч: ${formatKwh(metrics.Common_kwh)}`,
+      'Семьи:',
+      ...metrics.families.map((family) => `- ${formatFamily(family)}`),
+      'Комнаты:',
       ...metrics.rooms.map(
         (room) =>
-          `${room.name}: ${formatKwh(room.totalKwh)} = ${formatMoney(room.cost)} (база ${formatKwh(room.baseKwh)} + общие ${formatKwh(room.commonKwh)})`,
+          `${room.name}: людей ${room.people}, база ${formatKwh(room.baseKwh)}, общие ${formatKwh(room.commonKwh)}, итого ${formatKwh(room.totalKwh)} = ${formatMoney(room.cost)}`,
       ),
+      `Итого людей: ${metrics.totalPeople}`,
       `Итого: ${formatMoney(metrics.Total_rub)}`,
     ].join('\n')
 
@@ -280,7 +352,7 @@ function App() {
           </section>
 
           <section className="panel">
-            <h2>🏠 Счётчик B (комнаты 1–2)</h2>
+            <h2>🏠 Счётчик B (комнаты 1 и 3)</h2>
             <div className="field-grid two-cols">
               <label>
                 Предыдущее
@@ -309,7 +381,7 @@ function App() {
           </section>
 
           <section className="panel">
-            <h2>🏠 Счётчик C (комнаты 3–4)</h2>
+            <h2>🏠 Счётчик C (комнаты 2 и 4)</h2>
             <div className="field-grid two-cols">
               <label>
                 Предыдущее
@@ -339,26 +411,67 @@ function App() {
         </div>
 
         <section className="panel">
-          <h2>⚙️ Распределение общих расходов</h2>
-          <div className="toggle-group">
-            <label className="toggle-option">
-              <input
-                type="radio"
-                name="distributionMode"
-                checked={state.distributionMode === DISTRIBUTION_EQUAL}
-                onChange={() => setField(['distributionMode'], DISTRIBUTION_EQUAL)}
-              />
-              Поровну по 4 комнатам
-            </label>
-            <label className="toggle-option">
-              <input
-                type="radio"
-                name="distributionMode"
-                checked={state.distributionMode === DISTRIBUTION_PROPORTIONAL}
-                onChange={() => setField(['distributionMode'], DISTRIBUTION_PROPORTIONAL)}
-              />
-              Пропорционально потреблению
-            </label>
+          <h2>👥 Сколько человек в комнатах</h2>
+          <div className="field-grid people-grid">
+            {ROOM_NAMES.map((room, index) => (
+              <label key={room}>
+                {room}
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={state.people[index]}
+                  onChange={(e) => setPeople(index, e.target.value)}
+                />
+              </label>
+            ))}
+          </div>
+        </section>
+
+        {metrics.warnings.length > 0 && (
+          <section className="panel warning-panel">
+            <h2>⚠️ Предупреждения</h2>
+            <ul className="warnings-list">
+              {metrics.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <section className="panel">
+          <h2>🧾 Итоги по семьям</h2>
+          <div className="family-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Семья</th>
+                  <th>Людей</th>
+                  <th>Итого кВт⋅ч</th>
+                  <th>Сумма ₽</th>
+                </tr>
+              </thead>
+              <tbody>
+                {metrics.families.map((family) => (
+                  <tr key={family.name}>
+                    <td>{family.name}</td>
+                    <td>{family.people}</td>
+                    <td>{family.totalKwh.toFixed(2)}</td>
+                    <td>{formatMoney(family.cost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="family-cards">
+            {metrics.families.map((family) => (
+              <article className="room-card" key={`family-${family.name}`}>
+                <h3>{family.name}</h3>
+                <p>Людей: {family.people}</p>
+                <p>Итого: {formatKwh(family.totalKwh)}</p>
+                <p>Сумма: {formatMoney(family.cost)}</p>
+              </article>
+            ))}
           </div>
         </section>
 
@@ -370,16 +483,18 @@ function App() {
               <thead>
                 <tr>
                   <th>Комната</th>
-                  <th>База</th>
-                  <th>Общие</th>
-                  <th>Итог кВт⋅ч</th>
-                  <th>Стоимость</th>
+                  <th>Людей</th>
+                  <th>Базовые кВт⋅ч</th>
+                  <th>Общие кВт⋅ч</th>
+                  <th>Итого кВт⋅ч</th>
+                  <th>Сумма ₽</th>
                 </tr>
               </thead>
               <tbody>
                 {metrics.rooms.map((room) => (
                   <tr key={room.name}>
                     <td>{room.name}</td>
+                    <td>{room.people}</td>
                     <td>{room.baseKwh.toFixed(2)}</td>
                     <td>{room.commonKwh.toFixed(2)}</td>
                     <td>{room.totalKwh.toFixed(2)}</td>
@@ -387,6 +502,16 @@ function App() {
                   </tr>
                 ))}
               </tbody>
+              <tfoot>
+                <tr>
+                  <td>Итого</td>
+                  <td>{metrics.totalPeople}</td>
+                  <td>-</td>
+                  <td>{metrics.Common_kwh.toFixed(2)}</td>
+                  <td>{metrics.Rooms_total.toFixed(2)}</td>
+                  <td>{formatMoney(metrics.Total_rub)}</td>
+                </tr>
+              </tfoot>
             </table>
           </div>
 
@@ -394,12 +519,19 @@ function App() {
             {metrics.rooms.map((room) => (
               <article className="room-card" key={`mobile-${room.name}`}>
                 <h3>{room.name}</h3>
-                <p>База: {formatKwh(room.baseKwh)}</p>
+                <p>Людей: {room.people}</p>
+                <p>Базовые: {formatKwh(room.baseKwh)}</p>
                 <p>Общие: {formatKwh(room.commonKwh)}</p>
-                <p>Итог: {formatKwh(room.totalKwh)}</p>
-                <p>Стоимость: {formatMoney(room.cost)}</p>
+                <p>Итого: {formatKwh(room.totalKwh)}</p>
+                <p>Сумма: {formatMoney(room.cost)}</p>
               </article>
             ))}
+            <article className="room-card room-card-total">
+              <h3>Итого</h3>
+              <p>Людей: {metrics.totalPeople}</p>
+              <p>Common_kwh: {formatKwh(metrics.Common_kwh)}</p>
+              <p>Total ₽: {formatMoney(metrics.Total_rub)}</p>
+            </article>
           </div>
         </section>
 
@@ -414,6 +546,7 @@ function App() {
             <p>Цена 1 кВт⋅ч: {formatMoney(metrics.pricePerKwh)}</p>
             <p>Доля дня: {(metrics.dayShare * 100).toFixed(1)}%</p>
             <p>Доля ночи: {(metrics.nightShare * 100).toFixed(1)}%</p>
+            <p>Людей всего: {metrics.totalPeople}</p>
             <p className="summary-total">Total ₽: {formatMoney(metrics.Total_rub)}</p>
           </div>
         </section>

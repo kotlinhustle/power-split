@@ -78,6 +78,10 @@ h3 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.field-grid.people-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -143,6 +147,10 @@ input:focus {
   overflow-x: auto;
 }
 
+.family-table {
+  overflow-x: auto;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -154,6 +162,13 @@ td {
   border-bottom: 1px solid #25314e;
   text-align: left;
   padding: 10px 8px;
+}
+
+tfoot td {
+  border-top: 1px solid #3a4b74;
+  border-bottom: 0;
+  font-weight: 700;
+  color: #c7d8ff;
 }
 
 th {
@@ -168,6 +183,12 @@ th {
   gap: 10px;
 }
 
+.family-cards {
+  display: none;
+  gap: 10px;
+  margin-top: 10px;
+}
+
 .room-card {
   background: #0d1428;
   border: 1px solid #2b3a58;
@@ -178,6 +199,25 @@ th {
 .room-card p {
   margin: 4px 0;
   color: #c8d4f2;
+}
+
+.room-card-total {
+  border-color: #4f6cc5;
+}
+
+.warning-panel {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(44, 28, 8, 0.5);
+}
+
+.warnings-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #fde68a;
+}
+
+.warnings-list li {
+  margin: 6px 0;
 }
 
 .summary-grid {
@@ -261,11 +301,23 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .field-grid.people-grid {
+    grid-template-columns: 1fr;
+  }
+
   .rooms-table {
     display: none;
   }
 
+  .family-table {
+    display: none;
+  }
+
   .rooms-cards {
+    display: grid;
+  }
+
+  .family-cards {
     display: grid;
   }
 
