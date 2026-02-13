@@ -1,5 +1,6 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
+import { hasCloudConfig, loadApartment, saveApartment } from './cloudStore'
 
 const STORAGE_KEY = 'power-split-communal-v2'
 
@@ -25,6 +26,23 @@ const DEFAULT_STATE = {
 
 const ROOM_NAMES = ['Комната 1', 'Комната 2', 'Комната 3', 'Комната 4']
 
+const generateAccessKey = () => {
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+const getKeyFromHash = () => {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  return params.get('k')
+}
+
+const setKeyToHash = (key) => {
+  const nextHash = `#k=${encodeURIComponent(key)}`
+  const nextUrl = `${window.location.pathname}${window.location.search}${nextHash}`
+  window.history.replaceState(null, '', nextUrl)
+}
+
 const parseNumber = (value) => {
   const num = Number(value)
   return Number.isFinite(num) ? num : 0
@@ -41,47 +59,113 @@ const formatMoney = (value) => `${value.toFixed(2)} ₽`
 const formatKwh = (value) => `${value.toFixed(2)} кВт⋅ч`
 const formatFamily = (family) => `${family.name}: людей ${family.people}, ${formatKwh(family.totalKwh)} = ${formatMoney(family.cost)}`
 
+const normalizeState = (source) => {
+  const restoredPeople = Array.isArray(source?.people) ? source.people.map((v) => parsePeople(v)).slice(0, 4) : []
+
+  return {
+    tariffDay: parseNumber(source?.tariffDay),
+    tariffNight: parseNumber(source?.tariffNight),
+    meterA: {
+      dayPrev: source?.meterA?.dayPrev ?? '',
+      dayCurr: source?.meterA?.dayCurr ?? '',
+      nightPrev: source?.meterA?.nightPrev ?? '',
+      nightCurr: source?.meterA?.nightCurr ?? '',
+    },
+    meterB: {
+      prev: source?.meterB?.prev ?? '',
+      curr: source?.meterB?.curr ?? '',
+    },
+    meterC: {
+      prev: source?.meterC?.prev ?? '',
+      curr: source?.meterC?.curr ?? '',
+    },
+    people: [0, 1, 2, 3].map((i) => (Number.isInteger(restoredPeople[i]) ? restoredPeople[i] : 1)),
+  }
+}
+
+const getInviteLink = (key) => `${window.location.origin}${window.location.pathname}${window.location.search}#k=${encodeURIComponent(key)}`
+
 function App() {
   const [state, setState] = useState(DEFAULT_STATE)
   const [copyStatus, setCopyStatus] = useState('')
+  const [accessKey, setAccessKey] = useState('')
+  const [syncStatus, setSyncStatus] = useState(hasCloudConfig ? 'Инициализация…' : 'Локальный режим')
+  const [isBootstrapped, setIsBootstrapped] = useState(false)
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return
+    let active = true
 
-      const parsed = JSON.parse(raw)
-      if (!parsed || typeof parsed !== 'object') return
+    const bootstrap = async () => {
+      if (!hasCloudConfig) {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY)
+          if (raw && active) {
+            const parsed = JSON.parse(raw)
+            if (parsed && typeof parsed === 'object') {
+              setState(normalizeState(parsed))
+            }
+          }
+        } catch {
+          if (active) setState(DEFAULT_STATE)
+        } finally {
+          if (active) setIsBootstrapped(true)
+        }
+        return
+      }
 
-      const restoredPeople = Array.isArray(parsed.people) ? parsed.people.map((v) => parsePeople(v)).slice(0, 4) : []
+      let key = getKeyFromHash()
+      if (!key) {
+        key = generateAccessKey()
+        setKeyToHash(key)
+      }
+      if (!active) return
 
-      setState({
-        tariffDay: parseNumber(parsed.tariffDay),
-        tariffNight: parseNumber(parsed.tariffNight),
-        meterA: {
-          dayPrev: parsed?.meterA?.dayPrev ?? '',
-          dayCurr: parsed?.meterA?.dayCurr ?? '',
-          nightPrev: parsed?.meterA?.nightPrev ?? '',
-          nightCurr: parsed?.meterA?.nightCurr ?? '',
-        },
-        meterB: {
-          prev: parsed?.meterB?.prev ?? '',
-          curr: parsed?.meterB?.curr ?? '',
-        },
-        meterC: {
-          prev: parsed?.meterC?.prev ?? '',
-          curr: parsed?.meterC?.curr ?? '',
-        },
-        people: [0, 1, 2, 3].map((i) => (Number.isInteger(restoredPeople[i]) ? restoredPeople[i] : 1)),
-      })
-    } catch {
-      setState(DEFAULT_STATE)
+      setAccessKey(key)
+      setSyncStatus('Загружаю…')
+
+      try {
+        const cloudData = await loadApartment(key)
+        if (!active) return
+
+        if (cloudData && typeof cloudData === 'object') {
+          setState(normalizeState(cloudData))
+        } else {
+          await saveApartment(key, DEFAULT_STATE)
+        }
+        setSyncStatus('Синхронизировано')
+      } catch {
+        if (!active) return
+        setSyncStatus('Ошибка')
+      } finally {
+        if (active) setIsBootstrapped(true)
+      }
+    }
+
+    bootstrap()
+    return () => {
+      active = false
     }
   }, [])
 
   useEffect(() => {
+    if (!isBootstrapped) return
+    if (hasCloudConfig) return
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  }, [state])
+  }, [state, isBootstrapped])
+
+  useEffect(() => {
+    if (!hasCloudConfig || !isBootstrapped || !accessKey) return undefined
+    setSyncStatus('Сохраняю…')
+    const timer = setTimeout(async () => {
+      try {
+        await saveApartment(accessKey, state)
+        setSyncStatus('Синхронизировано')
+      } catch {
+        setSyncStatus('Ошибка')
+      }
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [state, accessKey, isBootstrapped])
 
   useEffect(() => {
     if (!copyStatus) return undefined
@@ -229,7 +313,9 @@ function App() {
   }
 
   const resetAll = () => {
-    localStorage.removeItem(STORAGE_KEY)
+    if (!hasCloudConfig) {
+      localStorage.removeItem(STORAGE_KEY)
+    }
     setState(DEFAULT_STATE)
     setCopyStatus('')
   }
@@ -261,9 +347,31 @@ function App() {
     }
   }
 
+  const handleCopyInviteLink = async () => {
+    if (!accessKey) {
+      setCopyStatus('Ключ ещё не готов')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(getInviteLink(accessKey))
+      setCopyStatus('Ссылка скопирована')
+    } catch {
+      setCopyStatus('Не удалось скопировать ссылку')
+    }
+  }
+
   return (
     <main className="app">
       <section className="card">
+        <div className="cloud-bar">
+          <p className="cloud-status">Статус: {syncStatus}</p>
+          {accessKey && (
+            <p className="cloud-link">
+              Ссылка доступа: <button type="button" className="link-btn" onClick={handleCopyInviteLink}>Copy</button>
+            </p>
+          )}
+        </div>
+
         <h1>⚡️ Power Split</h1>
         <p className="subtitle">Расчёт оплаты электроэнергии для коммунальной квартиры (4 комнаты).</p>
 
@@ -554,6 +662,9 @@ function App() {
         <div className="actions">
           <button type="button" className="btn secondary" onClick={handleCopyReport}>
             📋 Скопировать отчёт
+          </button>
+          <button type="button" className="btn secondary" onClick={handleCopyInviteLink}>
+            🔗 Скопировать ссылку приглашение
           </button>
           <button type="button" className="btn danger" onClick={resetAll}>
             Сбросить
