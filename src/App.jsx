@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
-import { hasCloudConfig, loadApartment, saveApartment } from './cloudStore'
+import { APARTMENT_KEY, hasSupabaseConfig, loadState, saveState } from './storage/supabaseStore'
 
 const STORAGE_KEY = 'power-split-communal-v2'
 
@@ -22,26 +22,14 @@ const DEFAULT_STATE = {
     curr: '',
   },
   people: [1, 1, 1, 1],
+  groups: [
+    { id: 'family13', name: 'Тётя Ира и Сергей', roomIndexes: [0, 2] },
+    { id: 'room2', name: 'Комната 2', roomIndexes: [1] },
+    { id: 'room4', name: 'Комната 4', roomIndexes: [3] },
+  ],
 }
 
 const ROOM_NAMES = ['Комната 1', 'Комната 2', 'Комната 3', 'Комната 4']
-
-const generateAccessKey = () => {
-  const bytes = new Uint8Array(24)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-const getKeyFromHash = () => {
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-  return params.get('k')
-}
-
-const setKeyToHash = (key) => {
-  const nextHash = `#k=${encodeURIComponent(key)}`
-  const nextUrl = `${window.location.pathname}${window.location.search}${nextHash}`
-  window.history.replaceState(null, '', nextUrl)
-}
 
 const parseNumber = (value) => {
   const num = Number(value)
@@ -61,6 +49,18 @@ const formatFamily = (family) => `${family.name}: людей ${family.people}, $
 
 const normalizeState = (source) => {
   const restoredPeople = Array.isArray(source?.people) ? source.people.map((v) => parsePeople(v)).slice(0, 4) : []
+  const defaultGroups = DEFAULT_STATE.groups
+  const restoredGroups = Array.isArray(source?.groups)
+    ? source.groups
+        .map((g, index) => ({
+          id: typeof g?.id === 'string' ? g.id : defaultGroups[index]?.id ?? `group-${index + 1}`,
+          name: typeof g?.name === 'string' ? g.name : defaultGroups[index]?.name ?? `Группа ${index + 1}`,
+          roomIndexes: Array.isArray(g?.roomIndexes)
+            ? g.roomIndexes.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 0 && n < 4)
+            : defaultGroups[index]?.roomIndexes ?? [],
+        }))
+        .filter((g) => g.roomIndexes.length > 0)
+    : defaultGroups
 
   return {
     tariffDay: parseNumber(source?.tariffDay),
@@ -80,64 +80,75 @@ const normalizeState = (source) => {
       curr: source?.meterC?.curr ?? '',
     },
     people: [0, 1, 2, 3].map((i) => (Number.isInteger(restoredPeople[i]) ? restoredPeople[i] : 1)),
+    groups: restoredGroups.length > 0 ? restoredGroups : defaultGroups,
   }
 }
 
-const getInviteLink = (key) => `${window.location.origin}${window.location.pathname}${window.location.search}#k=${encodeURIComponent(key)}`
-
 function App() {
-  const [state, setState] = useState(DEFAULT_STATE)
+  const [appState, setAppState] = useState(DEFAULT_STATE)
   const [copyStatus, setCopyStatus] = useState('')
-  const [accessKey, setAccessKey] = useState('')
-  const [syncStatus, setSyncStatus] = useState(hasCloudConfig ? 'Инициализация…' : 'Локальный режим')
-  const [isBootstrapped, setIsBootstrapped] = useState(false)
+  const [syncStatus, setSyncStatus] = useState('Loading')
+  const [hydrated, setHydrated] = useState(false)
+  const [loadedFromDbKey, setLoadedFromDbKey] = useState('')
+  const [canCreateRecord, setCanCreateRecord] = useState(false)
 
   useEffect(() => {
     let active = true
 
     const bootstrap = async () => {
-      if (!hasCloudConfig) {
+      setSyncStatus('Loading')
+      if (!hasSupabaseConfig) {
         try {
           const raw = localStorage.getItem(STORAGE_KEY)
           if (raw && active) {
             const parsed = JSON.parse(raw)
             if (parsed && typeof parsed === 'object') {
-              setState(normalizeState(parsed))
+              setAppState(normalizeState(parsed))
+            } else {
+              setAppState(DEFAULT_STATE)
             }
+          } else if (active) {
+            setAppState(DEFAULT_STATE)
+          }
+          if (active) {
+            setSyncStatus('Synced')
+            setHydrated(true)
           }
         } catch {
-          if (active) setState(DEFAULT_STATE)
-        } finally {
-          if (active) setIsBootstrapped(true)
+          if (active) {
+            setAppState(DEFAULT_STATE)
+            setSyncStatus('Error')
+            setHydrated(false)
+          }
         }
         return
       }
 
-      let key = getKeyFromHash()
-      if (!key) {
-        key = generateAccessKey()
-        setKeyToHash(key)
-      }
-      if (!active) return
-
-      setAccessKey(key)
-      setSyncStatus('Загружаю…')
-
       try {
-        const cloudData = await loadApartment(key)
+        const loadedRow = await loadState()
         if (!active) return
 
-        if (cloudData && typeof cloudData === 'object') {
-          setState(normalizeState(cloudData))
+        if (loadedRow?.data && typeof loadedRow.data === 'object') {
+          const finalStateAfterMigration = normalizeState(loadedRow.data)
+          setAppState(finalStateAfterMigration)
+          setLoadedFromDbKey(loadedRow.key || '')
+          console.log('loaded.data', loadedRow.data)
+          console.log('finalStateAfterMigration', finalStateAfterMigration)
+          setCanCreateRecord(false)
+          setHydrated(true)
+          setSyncStatus('Synced')
         } else {
-          await saveApartment(key, DEFAULT_STATE)
-        }
-        setSyncStatus('Синхронизировано')
+          setAppState(DEFAULT_STATE)
+          setLoadedFromDbKey('')
+          setCanCreateRecord(true)
+          setHydrated(false)
+          setSyncStatus('Error')
+        }        
       } catch {
-        if (!active) return
-        setSyncStatus('Ошибка')
-      } finally {
-        if (active) setIsBootstrapped(true)
+        if (active) {
+          setSyncStatus('Error')
+          setHydrated(false)
+        }
       }
     }
 
@@ -148,24 +159,31 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!isBootstrapped) return
-    if (hasCloudConfig) return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  }, [state, isBootstrapped])
+    if (!hydrated) return
+    if (hasSupabaseConfig) return
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState))
+  }, [appState, hydrated])
 
   useEffect(() => {
-    if (!hasCloudConfig || !isBootstrapped || !accessKey) return undefined
-    setSyncStatus('Сохраняю…')
+    if (!hydrated) return undefined
+
+    if (!hasSupabaseConfig) {
+      setSyncStatus('Synced')
+      return undefined
+    }
+
+    setSyncStatus('Loading')
     const timer = setTimeout(async () => {
       try {
-        await saveApartment(accessKey, state)
-        setSyncStatus('Синхронизировано')
+        await saveState(appState)
+        setSyncStatus('Synced')
       } catch {
-        setSyncStatus('Ошибка')
+        setSyncStatus('Error')
       }
     }, 800)
+
     return () => clearTimeout(timer)
-  }, [state, accessKey, isBootstrapped])
+  }, [appState, hydrated])
 
   useEffect(() => {
     if (!copyStatus) return undefined
@@ -174,15 +192,15 @@ function App() {
   }, [copyStatus])
 
   const metrics = useMemo(() => {
-    const A_day = usage(state.meterA.dayPrev, state.meterA.dayCurr)
-    const A_night = usage(state.meterA.nightPrev, state.meterA.nightCurr)
+    const A_day = usage(appState.meterA.dayPrev, appState.meterA.dayCurr)
+    const A_night = usage(appState.meterA.nightPrev, appState.meterA.nightCurr)
     const A_total = A_day + A_night
 
-    const B_total = usage(state.meterB.prev, state.meterB.curr)
-    const C_total = usage(state.meterC.prev, state.meterC.curr)
+    const B_total = usage(appState.meterB.prev, appState.meterB.curr)
+    const C_total = usage(appState.meterC.prev, appState.meterC.curr)
     const Common_kwh = Math.max(0, A_total - (B_total + C_total))
 
-    const peopleRaw = state.people.map((value) => parsePeople(value))
+    const peopleRaw = appState.people.map((value) => parsePeople(value))
     const warnings = []
 
     const baseByRoom = [0, 0, 0, 0]
@@ -219,13 +237,11 @@ function App() {
         ? [0, 0, 0, 0]
         : peopleRaw.map((p) => (p > 0 ? (Common_kwh * p) / totalPeoplePositive : 0))
 
-    if (totalPeoplePositive === 0) {
-      warnings.push('Нет жильцов')
-    }
+    if (totalPeoplePositive === 0) warnings.push('Нет жильцов')
 
     const dayShare = A_total === 0 ? 0.5 : A_day / A_total
     const nightShare = 1 - dayShare
-    const pricePerKwh = dayShare * parseNumber(state.tariffDay) + nightShare * parseNumber(state.tariffNight)
+    const pricePerKwh = dayShare * parseNumber(appState.tariffDay) + nightShare * parseNumber(appState.tariffNight)
 
     const rooms = ROOM_NAMES.map((name, index) => {
       const isOccupied = peopleRaw[index] > 0
@@ -244,26 +260,15 @@ function App() {
       }
     })
 
-    const families = [
-      {
-        name: 'Тётя Ира и Сергей',
-        people: rooms[0].people + rooms[2].people,
-        totalKwh: rooms[0].totalKwh + rooms[2].totalKwh,
-        cost: rooms[0].cost + rooms[2].cost,
-      },
-      {
-        name: 'Комната 2',
-        people: rooms[1].people,
-        totalKwh: rooms[1].totalKwh,
-        cost: rooms[1].cost,
-      },
-      {
-        name: 'Комната 4',
-        people: rooms[3].people,
-        totalKwh: rooms[3].totalKwh,
-        cost: rooms[3].cost,
-      },
-    ]
+    const families = appState.groups.map((group) => {
+      const selectedRooms = group.roomIndexes.map((idx) => rooms[idx]).filter(Boolean)
+      return {
+        name: group.name,
+        people: selectedRooms.reduce((sum, room) => sum + room.people, 0),
+        totalKwh: selectedRooms.reduce((sum, room) => sum + room.totalKwh, 0),
+        cost: selectedRooms.reduce((sum, room) => sum + room.cost, 0),
+      }
+    })
 
     const Rooms_total = rooms.reduce((sum, room) => sum + room.totalKwh, 0)
     const Total_rub = rooms.reduce((sum, room) => sum + room.cost, 0)
@@ -285,17 +290,17 @@ function App() {
       Total_rub,
       warnings,
     }
-  }, [state])
+  }, [appState])
 
   const errors = {
-    aDay: isLowerThanPrev(state.meterA.dayPrev, state.meterA.dayCurr),
-    aNight: isLowerThanPrev(state.meterA.nightPrev, state.meterA.nightCurr),
-    b: isLowerThanPrev(state.meterB.prev, state.meterB.curr),
-    c: isLowerThanPrev(state.meterC.prev, state.meterC.curr),
+    aDay: isLowerThanPrev(appState.meterA.dayPrev, appState.meterA.dayCurr),
+    aNight: isLowerThanPrev(appState.meterA.nightPrev, appState.meterA.nightCurr),
+    b: isLowerThanPrev(appState.meterB.prev, appState.meterB.curr),
+    c: isLowerThanPrev(appState.meterC.prev, appState.meterC.curr),
   }
 
   const setField = (path, value) => {
-    setState((prev) => {
+    setAppState((prev) => {
       const next = structuredClone(prev)
       let cursor = next
       for (let i = 0; i < path.length - 1; i += 1) cursor = cursor[path[i]]
@@ -305,7 +310,7 @@ function App() {
   }
 
   const setPeople = (index, value) => {
-    setState((prev) => {
+    setAppState((prev) => {
       const next = structuredClone(prev)
       next.people[index] = parsePeople(value)
       return next
@@ -313,17 +318,31 @@ function App() {
   }
 
   const resetAll = () => {
-    if (!hasCloudConfig) {
+    if (!hasSupabaseConfig) {
       localStorage.removeItem(STORAGE_KEY)
     }
-    setState(DEFAULT_STATE)
+    setAppState(DEFAULT_STATE)
     setCopyStatus('')
+  }
+
+  const handleCreateDbRecord = async () => {
+    if (!hasSupabaseConfig) return
+    setSyncStatus('Loading')
+    try {
+      await saveState(appState, { insertOnly: true })
+      setLoadedFromDbKey(APARTMENT_KEY)
+      setCanCreateRecord(false)
+      setHydrated(true)
+      setSyncStatus('Synced')
+    } catch {
+      setSyncStatus('Error')
+    }
   }
 
   const handleCopyReport = async () => {
     const report = [
       '🧾 Power Split',
-      `☀️/🌙 Тарифы: день ${formatMoney(parseNumber(state.tariffDay))}, ночь ${formatMoney(parseNumber(state.tariffNight))}`,
+      `☀️/🌙 Тарифы: день ${formatMoney(parseNumber(appState.tariffDay))}, ночь ${formatMoney(parseNumber(appState.tariffNight))}`,
       `⚡️ A: день ${formatKwh(metrics.A_day)}, ночь ${formatKwh(metrics.A_night)}, всего ${formatKwh(metrics.A_total)}`,
       `🏠 B (комнаты 1 и 3): ${formatKwh(metrics.B_total)}`,
       `🏠 C (комнаты 2 и 4): ${formatKwh(metrics.C_total)}`,
@@ -347,28 +366,19 @@ function App() {
     }
   }
 
-  const handleCopyInviteLink = async () => {
-    if (!accessKey) {
-      setCopyStatus('Ключ ещё не готов')
-      return
-    }
-    try {
-      await navigator.clipboard.writeText(getInviteLink(accessKey))
-      setCopyStatus('Ссылка скопирована')
-    } catch {
-      setCopyStatus('Не удалось скопировать ссылку')
-    }
-  }
-
   return (
     <main className="app">
       <section className="card">
         <div className="cloud-bar">
-          <p className="cloud-status">Статус: {syncStatus}</p>
-          {accessKey && (
-            <p className="cloud-link">
-              Ссылка доступа: <button type="button" className="link-btn" onClick={handleCopyInviteLink}>Copy</button>
-            </p>
+          <p className="cloud-status">Status: {syncStatus}</p>
+          <p className="cloud-link">Current key: <code>{APARTMENT_KEY}</code></p>
+          <p className="cloud-link">
+            loadedFromDbKey: <code>{loadedFromDbKey || '—'}</code>
+          </p>
+          {hasSupabaseConfig && canCreateRecord && (
+            <button type="button" className="btn secondary" onClick={handleCreateDbRecord}>
+              Создать запись в БД
+            </button>
           )}
         </div>
 
@@ -385,7 +395,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.tariffDay}
+                  value={appState.tariffDay}
                   onChange={(e) => setField(['tariffDay'], e.target.value)}
                 />
               </label>
@@ -395,7 +405,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.tariffNight}
+                  value={appState.tariffNight}
                   onChange={(e) => setField(['tariffNight'], e.target.value)}
                 />
               </label>
@@ -413,7 +423,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterA.dayPrev}
+                  value={appState.meterA.dayPrev}
                   onChange={(e) => setField(['meterA', 'dayPrev'], e.target.value)}
                 />
               </label>
@@ -424,7 +434,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterA.dayCurr}
+                  value={appState.meterA.dayCurr}
                   onChange={(e) => setField(['meterA', 'dayCurr'], e.target.value)}
                 />
               </label>
@@ -440,7 +450,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterA.nightPrev}
+                  value={appState.meterA.nightPrev}
                   onChange={(e) => setField(['meterA', 'nightPrev'], e.target.value)}
                 />
               </label>
@@ -451,7 +461,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterA.nightCurr}
+                  value={appState.meterA.nightCurr}
                   onChange={(e) => setField(['meterA', 'nightCurr'], e.target.value)}
                 />
               </label>
@@ -469,7 +479,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterB.prev}
+                  value={appState.meterB.prev}
                   onChange={(e) => setField(['meterB', 'prev'], e.target.value)}
                 />
               </label>
@@ -480,7 +490,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterB.curr}
+                  value={appState.meterB.curr}
                   onChange={(e) => setField(['meterB', 'curr'], e.target.value)}
                 />
               </label>
@@ -498,7 +508,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterC.prev}
+                  value={appState.meterC.prev}
                   onChange={(e) => setField(['meterC', 'prev'], e.target.value)}
                 />
               </label>
@@ -509,7 +519,7 @@ function App() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={state.meterC.curr}
+                  value={appState.meterC.curr}
                   onChange={(e) => setField(['meterC', 'curr'], e.target.value)}
                 />
               </label>
@@ -528,7 +538,7 @@ function App() {
                   type="number"
                   min="0"
                   step="1"
-                  value={state.people[index]}
+                  value={appState.people[index]}
                   onChange={(e) => setPeople(index, e.target.value)}
                 />
               </label>
@@ -662,9 +672,6 @@ function App() {
         <div className="actions">
           <button type="button" className="btn secondary" onClick={handleCopyReport}>
             📋 Скопировать отчёт
-          </button>
-          <button type="button" className="btn secondary" onClick={handleCopyInviteLink}>
-            🔗 Скопировать ссылку приглашение
           </button>
           <button type="button" className="btn danger" onClick={resetAll}>
             Сбросить
