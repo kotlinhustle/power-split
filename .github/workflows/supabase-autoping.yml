@@ -3,7 +3,8 @@ name: Supabase Auto Ping
 on:
   schedule:
     # каждые 3 дня (UTC)
-    - cron: "0 9 */3 * *"
+    # - cron: "0 9 */3 * *"
+    - cron: "*/1 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -12,10 +13,14 @@ jobs:
     steps:
       - name: Ping Supabase (apartments)
         run: |
+          echo "UTC now: $(date -u)"
+          echo "Trigger: ${{ github.event_name }}"
           curl --fail --silent --show-error \
             -H "apikey: $SUPABASE_ANON_KEY" \
             -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
             "$SUPABASE_URL/rest/v1/apartments?select=key&limit=1"
+          echo ""
+          echo "Ping OK"
         env:
           SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
