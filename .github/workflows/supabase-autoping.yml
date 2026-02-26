@@ -3,8 +3,8 @@ name: Supabase Auto Ping
 on:
   schedule:
     # каждые 3 дня (UTC)
-    # - cron: "0 9 */3 * *"
-    - cron: "*/5 * * * *"
+    - cron: "0 9 */3 * *"
+    #- cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
